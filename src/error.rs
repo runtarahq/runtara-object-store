@@ -31,6 +31,9 @@ pub enum ObjectStoreError {
 
     #[error("JSON serialization error: {0}")]
     Json(#[from] serde_json::Error),
+
+    #[error("Bulk operation failed: {0}")]
+    BulkOperation(String),
 }
 
 impl ObjectStoreError {
@@ -52,6 +55,10 @@ impl ObjectStoreError {
 
     pub fn database(msg: impl Into<String>) -> Self {
         Self::Database(msg.into())
+    }
+
+    pub fn bulk_operation(msg: impl Into<String>) -> Self {
+        Self::BulkOperation(msg.into())
     }
 }
 

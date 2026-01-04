@@ -11,6 +11,7 @@ Define schemas at runtime, create tables automatically, and query data with type
 - **Automatic Columns** — Configurable auto-managed `id`, `created_at`, `updated_at`
 - **Soft Delete** — Optional soft delete with `deleted` flag (enabled by default)
 - **Flexible Querying** — Condition-based filtering with AND/OR/NOT operators
+- **Bulk Operations** — Batch create, update, delete, and upsert with transaction guarantees
 - **SQL Injection Prevention** — All identifiers properly quoted and validated
 - **Multi-Tenant Ready** — Database-per-tenant isolation strategy
 
@@ -214,6 +215,87 @@ store.delete_instance("Products", &id).await?;
 // Check existence
 let exists = store.instance_exists(
     SimpleFilter::new("Products").filter("sku", "WIDGET-001")
+).await?;
+```
+
+## Bulk Operations
+
+All bulk operations run within a transaction and return the number of affected rows. If any operation fails, the entire transaction is rolled back.
+
+### Batch Create
+
+Insert multiple instances in a single transaction:
+
+```rust
+let instances = vec![
+    json!({"sku": "A001", "name": "Widget A", "price": 10.00}),
+    json!({"sku": "A002", "name": "Widget B", "price": 20.00}),
+    json!({"sku": "A003", "name": "Widget C", "price": 30.00}),
+];
+
+let count = store.create_instances("Products", instances).await?;
+println!("Created {} products", count); // Created 3 products
+```
+
+### Bulk Update
+
+Update all instances matching a condition:
+
+```rust
+use runtara_object_store::Condition;
+
+// Increase price by setting new values for all in-stock items
+let count = store.update_instances(
+    "Products",
+    json!({"in_stock": false}),           // New values to set
+    Condition::lt("price", 15.00),        // Condition: price < 15
+).await?;
+
+println!("Marked {} products as out of stock", count);
+```
+
+### Bulk Delete
+
+Delete all instances matching a condition (respects soft delete setting):
+
+```rust
+// Delete all products with price = 0
+let count = store.delete_instances(
+    "Products",
+    Condition::eq("price", 0),
+).await?;
+
+println!("Deleted {} products", count);
+```
+
+### Upsert (Insert or Update)
+
+Insert new instances or update existing ones based on conflict columns:
+
+```rust
+let instances = vec![
+    json!({"sku": "A001", "name": "Widget A", "price": 15.00}),  // Update existing
+    json!({"sku": "A004", "name": "Widget D", "price": 40.00}),  // Insert new
+];
+
+// Use "sku" as the conflict key
+let count = store.upsert_instances(
+    "Products",
+    instances,
+    vec!["sku".to_string()],  // Conflict columns
+).await?;
+
+println!("Upserted {} products", count);
+```
+
+For multi-column unique constraints:
+
+```rust
+// Upsert with composite key (region + product_code)
+let count = store.upsert_instances(
+    "Inventory",
+    instances,
+    vec!["region".to_string(), "product_code".to_string()],
 ).await?;
 ```
 

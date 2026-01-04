@@ -225,6 +225,7 @@ impl Condition {
     }
 
     /// Create a NOT condition
+    #[allow(clippy::should_implement_trait)]
     pub fn not(condition: Condition) -> Self {
         Self {
             op: "NOT".to_string(),

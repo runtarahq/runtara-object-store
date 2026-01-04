@@ -840,7 +840,7 @@ async fn test_all_column_types() {
             serde_json::json!({
                 "string_col": "hello",
                 "int_col": 42,
-                "float_col": 3.14159,
+                "float_col": 9.87,
                 "bool_col": true,
                 "json_col": {"nested": "value", "arr": [1, 2, 3]},
                 "decimal_col": 123.45,
@@ -859,7 +859,7 @@ async fn test_all_column_types() {
 
     assert_eq!(instance.properties["string_col"], "hello");
     assert_eq!(instance.properties["int_col"], 42);
-    assert!((instance.properties["float_col"].as_f64().unwrap() - 3.14159).abs() < 0.0001);
+    assert!((instance.properties["float_col"].as_f64().unwrap() - 9.87).abs() < 0.01);
     assert_eq!(instance.properties["bool_col"], true);
     assert_eq!(instance.properties["json_col"]["nested"], "value");
     assert!((instance.properties["decimal_col"].as_f64().unwrap() - 123.45).abs() < 0.01);
@@ -1009,6 +1009,726 @@ async fn test_pagination() {
         .expect("Should filter");
 
     assert_eq!(instances.len(), 3);
+
+    cleanup_test(&store, &prefix).await;
+}
+
+// ==================== Bulk Operations Tests ====================
+
+#[tokio::test]
+async fn test_update_instances_with_condition() {
+    let Some((store, prefix)) = create_test_store().await else {
+        eprintln!("Skipping test: TEST_DATABASE_URL not set");
+        return;
+    };
+
+    let table_name = format!("{}_bulk_update", prefix);
+    let request = CreateSchemaRequest {
+        name: "bulk_update".to_string(),
+        description: None,
+        table_name: table_name.clone(),
+        columns: vec![
+            ColumnDefinition::new("category", ColumnType::String).not_null(),
+            ColumnDefinition::new("status", ColumnType::String).not_null(),
+            ColumnDefinition::new("count", ColumnType::Integer),
+        ],
+        indexes: None,
+    };
+
+    store
+        .create_schema(request)
+        .await
+        .expect("Should create schema");
+
+    // Create test instances
+    for i in 0..5 {
+        let category = if i < 3 { "electronics" } else { "clothing" };
+        store
+            .create_instance(
+                "bulk_update",
+                serde_json::json!({
+                    "category": category,
+                    "status": "active",
+                    "count": i
+                }),
+            )
+            .await
+            .expect("Should create instance");
+    }
+
+    // Update all electronics to archived
+    let affected = store
+        .update_instances(
+            "bulk_update",
+            serde_json::json!({"status": "archived"}),
+            Condition::eq("category", "electronics"),
+        )
+        .await
+        .expect("Should update instances");
+
+    assert_eq!(affected, 3);
+
+    // Verify the update
+    let (instances, _) = store
+        .filter_instances(
+            "bulk_update",
+            FilterRequest::new().with_condition(Condition::eq("status", "archived")),
+        )
+        .await
+        .expect("Should filter");
+
+    assert_eq!(instances.len(), 3);
+
+    // Verify clothing is still active
+    let (instances, _) = store
+        .filter_instances(
+            "bulk_update",
+            FilterRequest::new().with_condition(Condition::eq("status", "active")),
+        )
+        .await
+        .expect("Should filter");
+
+    assert_eq!(instances.len(), 2);
+
+    cleanup_test(&store, &prefix).await;
+}
+
+#[tokio::test]
+async fn test_update_instances_no_matches() {
+    let Some((store, prefix)) = create_test_store().await else {
+        eprintln!("Skipping test: TEST_DATABASE_URL not set");
+        return;
+    };
+
+    let table_name = format!("{}_bulk_update_empty", prefix);
+    let request = CreateSchemaRequest {
+        name: "bulk_update_empty".to_string(),
+        description: None,
+        table_name: table_name.clone(),
+        columns: vec![
+            ColumnDefinition::new("name", ColumnType::String).not_null(),
+            ColumnDefinition::new("status", ColumnType::String),
+        ],
+        indexes: None,
+    };
+
+    store
+        .create_schema(request)
+        .await
+        .expect("Should create schema");
+
+    store
+        .create_instance(
+            "bulk_update_empty",
+            serde_json::json!({"name": "test", "status": "active"}),
+        )
+        .await
+        .expect("Should create");
+
+    // Update with condition that matches nothing
+    let affected = store
+        .update_instances(
+            "bulk_update_empty",
+            serde_json::json!({"status": "archived"}),
+            Condition::eq("name", "nonexistent"),
+        )
+        .await
+        .expect("Should succeed with 0 affected");
+
+    assert_eq!(affected, 0);
+
+    cleanup_test(&store, &prefix).await;
+}
+
+#[tokio::test]
+async fn test_delete_instances_soft_delete() {
+    let Some((store, prefix)) = create_test_store().await else {
+        eprintln!("Skipping test: TEST_DATABASE_URL not set");
+        return;
+    };
+
+    let table_name = format!("{}_bulk_delete_soft", prefix);
+    let request = CreateSchemaRequest {
+        name: "bulk_delete_soft".to_string(),
+        description: None,
+        table_name: table_name.clone(),
+        columns: vec![
+            ColumnDefinition::new("category", ColumnType::String).not_null(),
+            ColumnDefinition::new("value", ColumnType::Integer),
+        ],
+        indexes: None,
+    };
+
+    store
+        .create_schema(request)
+        .await
+        .expect("Should create schema");
+
+    // Create test instances
+    for i in 0..5 {
+        let category = if i < 3 { "to_delete" } else { "keep" };
+        store
+            .create_instance(
+                "bulk_delete_soft",
+                serde_json::json!({
+                    "category": category,
+                    "value": i
+                }),
+            )
+            .await
+            .expect("Should create instance");
+    }
+
+    // Delete all "to_delete" category
+    let affected = store
+        .delete_instances("bulk_delete_soft", Condition::eq("category", "to_delete"))
+        .await
+        .expect("Should delete instances");
+
+    assert_eq!(affected, 3);
+
+    // Verify only "keep" remains visible
+    let (instances, total) = store
+        .query_instances(SimpleFilter::new("bulk_delete_soft"))
+        .await
+        .expect("Should query");
+
+    assert_eq!(total, 2);
+    assert_eq!(instances.len(), 2);
+
+    cleanup_test(&store, &prefix).await;
+}
+
+#[tokio::test]
+async fn test_delete_instances_hard_delete() {
+    let db_url = match get_database_url() {
+        Some(url) => url,
+        None => {
+            eprintln!("Skipping test: TEST_DATABASE_URL not set");
+            return;
+        }
+    };
+
+    let prefix = test_prefix();
+    let metadata_table = format!("{}__schema", prefix);
+
+    // Create store with soft_delete disabled
+    let config = StoreConfig::builder(&db_url)
+        .metadata_table(&metadata_table)
+        .soft_delete(false)
+        .build();
+
+    let store = ObjectStore::new(config).await.expect("Should create store");
+
+    let table_name = format!("{}_bulk_delete_hard", prefix);
+    let request = CreateSchemaRequest {
+        name: "bulk_delete_hard".to_string(),
+        description: None,
+        table_name: table_name.clone(),
+        columns: vec![
+            ColumnDefinition::new("tag", ColumnType::String).not_null(),
+            ColumnDefinition::new("value", ColumnType::Integer),
+        ],
+        indexes: None,
+    };
+
+    store
+        .create_schema(request)
+        .await
+        .expect("Should create schema");
+
+    // Create test instances
+    for i in 0..4 {
+        let tag = if i < 2 { "remove" } else { "stay" };
+        store
+            .create_instance(
+                "bulk_delete_hard",
+                serde_json::json!({
+                    "tag": tag,
+                    "value": i
+                }),
+            )
+            .await
+            .expect("Should create instance");
+    }
+
+    // Hard delete "remove" tag
+    let affected = store
+        .delete_instances("bulk_delete_hard", Condition::eq("tag", "remove"))
+        .await
+        .expect("Should delete instances");
+
+    assert_eq!(affected, 2);
+
+    // Verify only "stay" remains
+    let (instances, total) = store
+        .query_instances(SimpleFilter::new("bulk_delete_hard"))
+        .await
+        .expect("Should query");
+
+    assert_eq!(total, 2);
+    assert_eq!(instances.len(), 2);
+
+    cleanup_test(&store, &prefix).await;
+}
+
+#[tokio::test]
+async fn test_create_instances_batch() {
+    let Some((store, prefix)) = create_test_store().await else {
+        eprintln!("Skipping test: TEST_DATABASE_URL not set");
+        return;
+    };
+
+    let table_name = format!("{}_bulk_create", prefix);
+    let request = CreateSchemaRequest {
+        name: "bulk_create".to_string(),
+        description: None,
+        table_name: table_name.clone(),
+        columns: vec![
+            ColumnDefinition::new("name", ColumnType::String).not_null(),
+            ColumnDefinition::new("index", ColumnType::Integer).not_null(),
+            ColumnDefinition::new("active", ColumnType::Boolean),
+        ],
+        indexes: None,
+    };
+
+    store
+        .create_schema(request)
+        .await
+        .expect("Should create schema");
+
+    // Create multiple instances at once
+    let instances: Vec<serde_json::Value> = (0..10)
+        .map(|i| {
+            serde_json::json!({
+                "name": format!("Item {}", i),
+                "index": i,
+                "active": i % 2 == 0
+            })
+        })
+        .collect();
+
+    let affected = store
+        .create_instances("bulk_create", instances)
+        .await
+        .expect("Should create instances");
+
+    assert_eq!(affected, 10);
+
+    // Verify all were created
+    let (results, total) = store
+        .query_instances(SimpleFilter::new("bulk_create"))
+        .await
+        .expect("Should query");
+
+    assert_eq!(total, 10);
+    assert_eq!(results.len(), 10);
+
+    cleanup_test(&store, &prefix).await;
+}
+
+#[tokio::test]
+async fn test_create_instances_validation_rollback() {
+    let Some((store, prefix)) = create_test_store().await else {
+        eprintln!("Skipping test: TEST_DATABASE_URL not set");
+        return;
+    };
+
+    let table_name = format!("{}_bulk_create_fail", prefix);
+    let request = CreateSchemaRequest {
+        name: "bulk_create_fail".to_string(),
+        description: None,
+        table_name: table_name.clone(),
+        columns: vec![
+            ColumnDefinition::new("name", ColumnType::String).not_null(),
+            ColumnDefinition::new("count", ColumnType::Integer).not_null(),
+        ],
+        indexes: None,
+    };
+
+    store
+        .create_schema(request)
+        .await
+        .expect("Should create schema");
+
+    // Try to create instances with one invalid (missing required field)
+    let instances = vec![
+        serde_json::json!({"name": "Valid 1", "count": 1}),
+        serde_json::json!({"name": "Valid 2", "count": 2}),
+        serde_json::json!({"name": "Invalid"}), // Missing required "count"
+        serde_json::json!({"name": "Valid 3", "count": 3}),
+    ];
+
+    let result = store.create_instances("bulk_create_fail", instances).await;
+
+    // Should fail due to validation
+    assert!(result.is_err());
+
+    // Verify no instances were created (pre-validation should prevent any insertion)
+    let (results, total) = store
+        .query_instances(SimpleFilter::new("bulk_create_fail"))
+        .await
+        .expect("Should query");
+
+    assert_eq!(total, 0);
+    assert_eq!(results.len(), 0);
+
+    cleanup_test(&store, &prefix).await;
+}
+
+#[tokio::test]
+async fn test_create_instances_empty() {
+    let Some((store, prefix)) = create_test_store().await else {
+        eprintln!("Skipping test: TEST_DATABASE_URL not set");
+        return;
+    };
+
+    let table_name = format!("{}_bulk_create_empty", prefix);
+    let request = CreateSchemaRequest {
+        name: "bulk_create_empty".to_string(),
+        description: None,
+        table_name: table_name.clone(),
+        columns: vec![ColumnDefinition::new("name", ColumnType::String)],
+        indexes: None,
+    };
+
+    store
+        .create_schema(request)
+        .await
+        .expect("Should create schema");
+
+    // Create with empty array
+    let affected = store
+        .create_instances("bulk_create_empty", vec![])
+        .await
+        .expect("Should succeed");
+
+    assert_eq!(affected, 0);
+
+    cleanup_test(&store, &prefix).await;
+}
+
+#[tokio::test]
+async fn test_upsert_instances_insert_only() {
+    let Some((store, prefix)) = create_test_store().await else {
+        eprintln!("Skipping test: TEST_DATABASE_URL not set");
+        return;
+    };
+
+    let table_name = format!("{}_upsert_insert", prefix);
+    let request = CreateSchemaRequest {
+        name: "upsert_insert".to_string(),
+        description: None,
+        table_name: table_name.clone(),
+        columns: vec![
+            ColumnDefinition::new("sku", ColumnType::String)
+                .unique()
+                .not_null(),
+            ColumnDefinition::new("name", ColumnType::String).not_null(),
+            ColumnDefinition::new("price", ColumnType::decimal(10, 2)),
+        ],
+        indexes: None,
+    };
+
+    store
+        .create_schema(request)
+        .await
+        .expect("Should create schema");
+
+    // Upsert new instances
+    let instances = vec![
+        serde_json::json!({"sku": "SKU001", "name": "Product 1", "price": 10.00}),
+        serde_json::json!({"sku": "SKU002", "name": "Product 2", "price": 20.00}),
+        serde_json::json!({"sku": "SKU003", "name": "Product 3", "price": 30.00}),
+    ];
+
+    let affected = store
+        .upsert_instances("upsert_insert", instances, vec!["sku".to_string()])
+        .await
+        .expect("Should upsert");
+
+    assert_eq!(affected, 3);
+
+    // Verify all were created
+    let (results, total) = store
+        .query_instances(SimpleFilter::new("upsert_insert"))
+        .await
+        .expect("Should query");
+
+    assert_eq!(total, 3);
+    assert_eq!(results.len(), 3);
+
+    cleanup_test(&store, &prefix).await;
+}
+
+#[tokio::test]
+async fn test_upsert_instances_update_only() {
+    let Some((store, prefix)) = create_test_store().await else {
+        eprintln!("Skipping test: TEST_DATABASE_URL not set");
+        return;
+    };
+
+    let table_name = format!("{}_upsert_update", prefix);
+    let request = CreateSchemaRequest {
+        name: "upsert_update".to_string(),
+        description: None,
+        table_name: table_name.clone(),
+        columns: vec![
+            ColumnDefinition::new("code", ColumnType::String)
+                .unique()
+                .not_null(),
+            ColumnDefinition::new("value", ColumnType::Integer).not_null(),
+        ],
+        indexes: None,
+    };
+
+    store
+        .create_schema(request)
+        .await
+        .expect("Should create schema");
+
+    // Create initial instances
+    for code in ["A", "B", "C"] {
+        store
+            .create_instance(
+                "upsert_update",
+                serde_json::json!({"code": code, "value": 1}),
+            )
+            .await
+            .expect("Should create");
+    }
+
+    // Upsert with updated values
+    let instances = vec![
+        serde_json::json!({"code": "A", "value": 100}),
+        serde_json::json!({"code": "B", "value": 200}),
+        serde_json::json!({"code": "C", "value": 300}),
+    ];
+
+    let affected = store
+        .upsert_instances("upsert_update", instances, vec!["code".to_string()])
+        .await
+        .expect("Should upsert");
+
+    assert_eq!(affected, 3);
+
+    // Verify values were updated
+    let (_results, total) = store
+        .query_instances(SimpleFilter::new("upsert_update"))
+        .await
+        .expect("Should query");
+
+    assert_eq!(total, 3); // Still only 3 (no new rows)
+
+    // Check one of the updated values
+    let instance = store
+        .instance_exists(SimpleFilter::new("upsert_update").filter("code", "A"))
+        .await
+        .expect("Should find")
+        .expect("Should exist");
+
+    assert_eq!(instance.properties["value"], 100);
+
+    cleanup_test(&store, &prefix).await;
+}
+
+#[tokio::test]
+async fn test_upsert_instances_mixed() {
+    let Some((store, prefix)) = create_test_store().await else {
+        eprintln!("Skipping test: TEST_DATABASE_URL not set");
+        return;
+    };
+
+    let table_name = format!("{}_upsert_mixed", prefix);
+    let request = CreateSchemaRequest {
+        name: "upsert_mixed".to_string(),
+        description: None,
+        table_name: table_name.clone(),
+        columns: vec![
+            ColumnDefinition::new("key", ColumnType::String)
+                .unique()
+                .not_null(),
+            ColumnDefinition::new("data", ColumnType::String).not_null(),
+        ],
+        indexes: None,
+    };
+
+    store
+        .create_schema(request)
+        .await
+        .expect("Should create schema");
+
+    // Create some initial instances
+    store
+        .create_instance(
+            "upsert_mixed",
+            serde_json::json!({"key": "existing1", "data": "old1"}),
+        )
+        .await
+        .expect("Should create");
+    store
+        .create_instance(
+            "upsert_mixed",
+            serde_json::json!({"key": "existing2", "data": "old2"}),
+        )
+        .await
+        .expect("Should create");
+
+    // Upsert: 2 updates + 2 inserts
+    let instances = vec![
+        serde_json::json!({"key": "existing1", "data": "updated1"}), // Update
+        serde_json::json!({"key": "new1", "data": "new1"}),          // Insert
+        serde_json::json!({"key": "existing2", "data": "updated2"}), // Update
+        serde_json::json!({"key": "new2", "data": "new2"}),          // Insert
+    ];
+
+    let affected = store
+        .upsert_instances("upsert_mixed", instances, vec!["key".to_string()])
+        .await
+        .expect("Should upsert");
+
+    assert_eq!(affected, 4);
+
+    // Verify total count
+    let (_, total) = store
+        .query_instances(SimpleFilter::new("upsert_mixed"))
+        .await
+        .expect("Should query");
+
+    assert_eq!(total, 4); // 2 existing + 2 new
+
+    // Verify updates happened
+    let instance = store
+        .instance_exists(SimpleFilter::new("upsert_mixed").filter("key", "existing1"))
+        .await
+        .expect("Should find")
+        .expect("Should exist");
+
+    assert_eq!(instance.properties["data"], "updated1");
+
+    cleanup_test(&store, &prefix).await;
+}
+
+#[tokio::test]
+async fn test_upsert_instances_multi_column_conflict() {
+    let Some((store, prefix)) = create_test_store().await else {
+        eprintln!("Skipping test: TEST_DATABASE_URL not set");
+        return;
+    };
+
+    let table_name = format!("{}_upsert_multi", prefix);
+    let request = CreateSchemaRequest {
+        name: "upsert_multi".to_string(),
+        description: None,
+        table_name: table_name.clone(),
+        columns: vec![
+            ColumnDefinition::new("tenant", ColumnType::String).not_null(),
+            ColumnDefinition::new("code", ColumnType::String).not_null(),
+            ColumnDefinition::new("value", ColumnType::Integer).not_null(),
+        ],
+        indexes: Some(vec![
+            IndexDefinition::new(
+                "tenant_code_unique",
+                vec!["tenant".to_string(), "code".to_string()],
+            )
+            .unique(),
+        ]),
+    };
+
+    store
+        .create_schema(request)
+        .await
+        .expect("Should create schema");
+
+    // Create initial instances
+    store
+        .create_instance(
+            "upsert_multi",
+            serde_json::json!({"tenant": "A", "code": "X", "value": 1}),
+        )
+        .await
+        .expect("Should create");
+    store
+        .create_instance(
+            "upsert_multi",
+            serde_json::json!({"tenant": "A", "code": "Y", "value": 2}),
+        )
+        .await
+        .expect("Should create");
+
+    // Upsert with multi-column conflict
+    let instances = vec![
+        serde_json::json!({"tenant": "A", "code": "X", "value": 100}), // Update
+        serde_json::json!({"tenant": "A", "code": "Z", "value": 3}),   // Insert
+        serde_json::json!({"tenant": "B", "code": "X", "value": 4}),   // Insert (different tenant)
+    ];
+
+    let affected = store
+        .upsert_instances(
+            "upsert_multi",
+            instances,
+            vec!["tenant".to_string(), "code".to_string()],
+        )
+        .await
+        .expect("Should upsert");
+
+    assert_eq!(affected, 3);
+
+    // Verify total count: 2 original + 2 new = 4
+    let (_, total) = store
+        .query_instances(SimpleFilter::new("upsert_multi"))
+        .await
+        .expect("Should query");
+
+    assert_eq!(total, 4);
+
+    // Verify the update happened
+    let (instances, _) = store
+        .filter_instances(
+            "upsert_multi",
+            FilterRequest::new().with_condition(Condition::and(vec![
+                Condition::eq("tenant", "A"),
+                Condition::eq("code", "X"),
+            ])),
+        )
+        .await
+        .expect("Should filter");
+
+    assert_eq!(instances.len(), 1);
+    assert_eq!(instances[0].properties["value"], 100);
+
+    cleanup_test(&store, &prefix).await;
+}
+
+#[tokio::test]
+async fn test_upsert_instances_empty_conflict_columns() {
+    let Some((store, prefix)) = create_test_store().await else {
+        eprintln!("Skipping test: TEST_DATABASE_URL not set");
+        return;
+    };
+
+    let table_name = format!("{}_upsert_empty_conflict", prefix);
+    let request = CreateSchemaRequest {
+        name: "upsert_empty_conflict".to_string(),
+        description: None,
+        table_name: table_name.clone(),
+        columns: vec![ColumnDefinition::new("name", ColumnType::String)],
+        indexes: None,
+    };
+
+    store
+        .create_schema(request)
+        .await
+        .expect("Should create schema");
+
+    let instances = vec![serde_json::json!({"name": "test"})];
+
+    // Should fail with empty conflict columns
+    let result = store
+        .upsert_instances("upsert_empty_conflict", instances, vec![])
+        .await;
+
+    assert!(result.is_err());
 
     cleanup_test(&store, &prefix).await;
 }

@@ -378,7 +378,7 @@ mod tests {
 
     #[test]
     fn test_reserved_words_not_empty() {
-        assert!(!POSTGRES_RESERVED_WORDS.is_empty());
+        // POSTGRES_RESERVED_WORDS is a const, so we just validate it has sufficient entries
         assert!(POSTGRES_RESERVED_WORDS.len() > 50); // Should have many reserved words
     }
 }
