@@ -115,6 +115,21 @@ pub fn build_condition_clause(
                     _ => unreachable!(),
                 };
 
+                // Handle NULL values specially - use IS NULL / IS NOT NULL
+                if value.is_null() {
+                    let null_operator = match op.as_str() {
+                        "EQ" => "IS NULL",
+                        "NE" => "IS NOT NULL",
+                        _ => {
+                            return Err(format!(
+                                "{} operation with NULL value is not supported",
+                                op
+                            ));
+                        }
+                    };
+                    return Ok((format!("\"{}\" {}", field, null_operator), params));
+                }
+
                 // Convert value to string for comparison
                 let value_str = match value {
                     serde_json::Value::String(s) => s.clone(),
