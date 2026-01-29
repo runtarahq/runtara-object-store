@@ -20,5 +20,8 @@ uuid = { version = "1", features = ["v4"] }
 regex = "1"
 rust_decimal = { version = "1", features = ["db-postgres"] }
 
+# DSL types for ConditionExpression
+runtara-dsl = { git = "https://github.com/runtarahq/runtara", branch = "main" }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

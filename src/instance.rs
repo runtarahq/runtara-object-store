@@ -1,7 +1,12 @@
 //! Instance-related types for Object Store
 //!
-//! Includes Instance, CreateInstanceRequest, Condition, FilterRequest.
+//! Includes Instance, CreateInstanceRequest, FilterRequest.
+//! Uses ConditionExpression from runtara-dsl for filtering.
 
+use runtara_dsl::{
+    ConditionArgument, ConditionExpression, ConditionOperation, ConditionOperator, ImmediateValue,
+    MappingValue, ReferenceValue,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -103,134 +108,92 @@ impl UpdateInstanceRequest {
 }
 
 // ============================================================================
-// Condition-based Filtering
+// Condition-based Filtering (using ConditionExpression from runtara-dsl)
 // ============================================================================
 
-/// Filter condition for querying instances
-///
-/// Supports operators:
-/// - Logical: AND, OR, NOT
-/// - Comparison: EQ, NE, GT, LT, GTE, LTE
-/// - Collection: IN, NOT_IN, CONTAINS
-/// - Null checks: IS_EMPTY, IS_NOT_EMPTY, IS_DEFINED
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Condition {
-    /// Operator (e.g., "EQ", "AND", "IN")
-    pub op: String,
-    /// Arguments for the operator
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub arguments: Option<Vec<serde_json::Value>>,
-}
+/// Helper functions to create ConditionExpression instances
+pub mod condition_helpers {
+    use super::*;
 
-impl Condition {
-    /// Create a new condition with the given operator and arguments
-    pub fn new(op: impl Into<String>, arguments: Vec<serde_json::Value>) -> Self {
-        Self {
-            op: op.into(),
-            arguments: Some(arguments),
-        }
-    }
-
-    /// Create an equality condition
-    pub fn eq(field: impl Into<String>, value: impl Into<serde_json::Value>) -> Self {
-        Self::new("EQ", vec![serde_json::json!(field.into()), value.into()])
-    }
-
-    /// Create a not-equal condition
-    pub fn ne(field: impl Into<String>, value: impl Into<serde_json::Value>) -> Self {
-        Self::new("NE", vec![serde_json::json!(field.into()), value.into()])
-    }
-
-    /// Create a greater-than condition
-    pub fn gt(field: impl Into<String>, value: impl Into<serde_json::Value>) -> Self {
-        Self::new("GT", vec![serde_json::json!(field.into()), value.into()])
-    }
-
-    /// Create a less-than condition
-    pub fn lt(field: impl Into<String>, value: impl Into<serde_json::Value>) -> Self {
-        Self::new("LT", vec![serde_json::json!(field.into()), value.into()])
-    }
-
-    /// Create a greater-than-or-equal condition
-    pub fn gte(field: impl Into<String>, value: impl Into<serde_json::Value>) -> Self {
-        Self::new("GTE", vec![serde_json::json!(field.into()), value.into()])
-    }
-
-    /// Create a less-than-or-equal condition
-    pub fn lte(field: impl Into<String>, value: impl Into<serde_json::Value>) -> Self {
-        Self::new("LTE", vec![serde_json::json!(field.into()), value.into()])
-    }
-
-    /// Create an IN condition
-    pub fn r#in(field: impl Into<String>, values: Vec<serde_json::Value>) -> Self {
-        Self::new(
-            "IN",
-            vec![serde_json::json!(field.into()), serde_json::json!(values)],
-        )
-    }
-
-    /// Create a NOT IN condition
-    pub fn not_in(field: impl Into<String>, values: Vec<serde_json::Value>) -> Self {
-        Self::new(
-            "NOT_IN",
-            vec![serde_json::json!(field.into()), serde_json::json!(values)],
-        )
-    }
-
-    /// Create a CONTAINS condition (for text search)
-    pub fn contains(field: impl Into<String>, value: impl Into<String>) -> Self {
-        Self::new(
-            "CONTAINS",
-            vec![
-                serde_json::json!(field.into()),
-                serde_json::json!(value.into()),
+    /// Create an equality condition: field == value
+    pub fn eq(field: impl Into<String>, value: serde_json::Value) -> ConditionExpression {
+        ConditionExpression::Operation(ConditionOperation {
+            op: ConditionOperator::Eq,
+            arguments: vec![
+                ConditionArgument::Value(MappingValue::Reference(ReferenceValue {
+                    value: field.into(),
+                    type_hint: None,
+                    default: None,
+                })),
+                ConditionArgument::Value(MappingValue::Immediate(ImmediateValue { value })),
             ],
-        )
+        })
     }
 
-    /// Create an IS_EMPTY condition
-    pub fn is_empty(field: impl Into<String>) -> Self {
-        Self::new("IS_EMPTY", vec![serde_json::json!(field.into())])
+    /// Create a not-equal condition: field != value
+    pub fn ne(field: impl Into<String>, value: serde_json::Value) -> ConditionExpression {
+        ConditionExpression::Operation(ConditionOperation {
+            op: ConditionOperator::Ne,
+            arguments: vec![
+                ConditionArgument::Value(MappingValue::Reference(ReferenceValue {
+                    value: field.into(),
+                    type_hint: None,
+                    default: None,
+                })),
+                ConditionArgument::Value(MappingValue::Immediate(ImmediateValue { value })),
+            ],
+        })
     }
 
-    /// Create an IS_NOT_EMPTY condition
-    pub fn is_not_empty(field: impl Into<String>) -> Self {
-        Self::new("IS_NOT_EMPTY", vec![serde_json::json!(field.into())])
+    /// Create a greater-than condition: field > value
+    pub fn gt(field: impl Into<String>, value: serde_json::Value) -> ConditionExpression {
+        ConditionExpression::Operation(ConditionOperation {
+            op: ConditionOperator::Gt,
+            arguments: vec![
+                ConditionArgument::Value(MappingValue::Reference(ReferenceValue {
+                    value: field.into(),
+                    type_hint: None,
+                    default: None,
+                })),
+                ConditionArgument::Value(MappingValue::Immediate(ImmediateValue { value })),
+            ],
+        })
+    }
+
+    /// Create an IS_DEFINED condition: field IS NOT NULL
+    pub fn is_defined(field: impl Into<String>) -> ConditionExpression {
+        ConditionExpression::Operation(ConditionOperation {
+            op: ConditionOperator::IsDefined,
+            arguments: vec![ConditionArgument::Value(MappingValue::Reference(
+                ReferenceValue {
+                    value: field.into(),
+                    type_hint: None,
+                    default: None,
+                },
+            ))],
+        })
     }
 
     /// Create an AND condition combining multiple conditions
-    pub fn and(conditions: Vec<Condition>) -> Self {
-        Self {
-            op: "AND".to_string(),
-            arguments: Some(
-                conditions
-                    .into_iter()
-                    .map(|c| serde_json::to_value(c).unwrap())
-                    .collect(),
-            ),
-        }
+    pub fn and(conditions: Vec<ConditionExpression>) -> ConditionExpression {
+        ConditionExpression::Operation(ConditionOperation {
+            op: ConditionOperator::And,
+            arguments: conditions
+                .into_iter()
+                .map(|c| ConditionArgument::Expression(Box::new(c)))
+                .collect(),
+        })
     }
 
     /// Create an OR condition combining multiple conditions
-    pub fn or(conditions: Vec<Condition>) -> Self {
-        Self {
-            op: "OR".to_string(),
-            arguments: Some(
-                conditions
-                    .into_iter()
-                    .map(|c| serde_json::to_value(c).unwrap())
-                    .collect(),
-            ),
-        }
-    }
-
-    /// Create a NOT condition
-    #[allow(clippy::should_implement_trait)]
-    pub fn not(condition: Condition) -> Self {
-        Self {
-            op: "NOT".to_string(),
-            arguments: Some(vec![serde_json::to_value(condition).unwrap()]),
-        }
+    pub fn or(conditions: Vec<ConditionExpression>) -> ConditionExpression {
+        ConditionExpression::Operation(ConditionOperation {
+            op: ConditionOperator::Or,
+            arguments: conditions
+                .into_iter()
+                .map(|c| ConditionArgument::Expression(Box::new(c)))
+                .collect(),
+        })
     }
 }
 
@@ -251,9 +214,9 @@ pub struct FilterRequest {
     /// Maximum number of results to return
     #[serde(default = "default_limit")]
     pub limit: i64,
-    /// Filter condition
+    /// Filter condition (uses ConditionExpression from runtara-dsl)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub condition: Option<Condition>,
+    pub condition: Option<ConditionExpression>,
     /// Fields to sort by (e.g., ["createdAt", "name"])
     #[serde(rename = "sortBy", skip_serializing_if = "Option::is_none")]
     pub sort_by: Option<Vec<String>>,
@@ -280,8 +243,8 @@ impl FilterRequest {
         Self::default()
     }
 
-    /// Set the condition
-    pub fn with_condition(mut self, condition: Condition) -> Self {
+    /// Set the condition (ConditionExpression from runtara-dsl)
+    pub fn with_condition(mut self, condition: ConditionExpression) -> Self {
         self.condition = Some(condition);
         self
     }
@@ -357,35 +320,21 @@ impl SimpleFilter {
         self
     }
 
-    /// Convert simple filter to FilterRequest with condition
+    /// Convert simple filter to FilterRequest with ConditionExpression
     pub fn to_filter_request(&self) -> FilterRequest {
         let condition = if self.filters.is_empty() {
             None
         } else {
-            let conditions: Vec<serde_json::Value> = self
+            let conditions: Vec<ConditionExpression> = self
                 .filters
                 .iter()
-                .map(|(key, value)| {
-                    serde_json::json!({
-                        "op": "EQ",
-                        "arguments": [key, value]
-                    })
-                })
+                .map(|(key, value)| condition_helpers::eq(key.clone(), value.clone()))
                 .collect();
 
             if conditions.len() == 1 {
-                Some(Condition {
-                    op: "EQ".to_string(),
-                    arguments: Some(vec![
-                        serde_json::json!(self.filters.keys().next().unwrap()),
-                        self.filters.values().next().unwrap().clone(),
-                    ]),
-                })
+                Some(conditions.into_iter().next().unwrap())
             } else {
-                Some(Condition {
-                    op: "AND".to_string(),
-                    arguments: Some(conditions),
-                })
+                Some(condition_helpers::and(conditions))
             }
         };
 
@@ -415,15 +364,25 @@ mod tests {
     }
 
     #[test]
-    fn test_condition_builders() {
-        let cond = Condition::eq("status", "active");
-        assert_eq!(cond.op, "EQ");
+    fn test_condition_helpers() {
+        let cond = condition_helpers::eq("status", serde_json::json!("active"));
+        match cond {
+            ConditionExpression::Operation(op) => {
+                assert_eq!(op.op, ConditionOperator::Eq);
+            }
+            _ => panic!("Expected Operation"),
+        }
 
-        let cond = Condition::and(vec![
-            Condition::eq("status", "active"),
-            Condition::gt("price", 100),
+        let cond = condition_helpers::and(vec![
+            condition_helpers::eq("status", serde_json::json!("active")),
+            condition_helpers::gt("price", serde_json::json!(100)),
         ]);
-        assert_eq!(cond.op, "AND");
+        match cond {
+            ConditionExpression::Operation(op) => {
+                assert_eq!(op.op, ConditionOperator::And);
+            }
+            _ => panic!("Expected Operation"),
+        }
     }
 
     #[test]
@@ -442,13 +401,19 @@ mod tests {
         assert_eq!(request.offset, 10);
         assert_eq!(request.limit, 50);
         assert!(request.condition.is_some());
-        assert_eq!(request.condition.unwrap().op, "AND");
+        // AND condition for multiple filters
+        match request.condition.unwrap() {
+            ConditionExpression::Operation(op) => {
+                assert_eq!(op.op, ConditionOperator::And);
+            }
+            _ => panic!("Expected Operation"),
+        }
     }
 
     #[test]
     fn test_filter_request_builder() {
         let request = FilterRequest::new()
-            .with_condition(Condition::eq("active", true))
+            .with_condition(condition_helpers::eq("active", serde_json::json!(true)))
             .with_pagination(0, 25)
             .with_sort(vec!["createdAt".to_string()], vec!["desc".to_string()]);
 

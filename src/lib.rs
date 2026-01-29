@@ -52,7 +52,7 @@
 //!     ).await?;
 //!
 //!     // Query instances
-//!     use runtara_object_store::{SimpleFilter, Condition, FilterRequest};
+//!     use runtara_object_store::{SimpleFilter, FilterRequest};
 //!
 //!     let (products, count) = store.query_instances(
 //!         SimpleFilter::new("Products")
@@ -98,11 +98,18 @@ pub mod types;
 pub use config::{AutoColumns, StoreConfig, StoreConfigBuilder};
 pub use error::{ObjectStoreError, Result};
 pub use instance::{
-    Condition, CreateInstanceRequest, FilterRequest, Instance, SimpleFilter, UpdateInstanceRequest,
+    condition_helpers, CreateInstanceRequest, FilterRequest, Instance, SimpleFilter,
+    UpdateInstanceRequest,
 };
 pub use schema::{CreateSchemaRequest, Schema, UpdateSchemaRequest};
 pub use store::ObjectStore;
 pub use types::{ColumnDefinition, ColumnType, IndexDefinition};
+
+// Re-export ConditionExpression types from runtara-dsl for convenience
+pub use runtara_dsl::{
+    ConditionArgument, ConditionExpression, ConditionOperation, ConditionOperator, ImmediateValue,
+    MappingValue, ReferenceValue,
+};
 
 // Re-export SQL utilities for advanced users
 pub use sql::condition::{build_condition_clause, build_order_by_clause};

@@ -7,7 +7,8 @@ use sqlx::{PgPool, Row};
 
 use crate::config::StoreConfig;
 use crate::error::{ObjectStoreError, Result};
-use crate::instance::{Condition, FilterRequest, Instance, SimpleFilter};
+use crate::instance::{FilterRequest, Instance, SimpleFilter};
+use runtara_dsl::ConditionExpression;
 use crate::schema::{CreateSchemaRequest, Schema, UpdateSchemaRequest};
 use crate::sql::condition::{build_condition_clause, build_order_by_clause};
 use crate::sql::ddl::DdlGenerator;
@@ -749,7 +750,7 @@ impl ObjectStore {
     /// # Arguments
     /// * `schema_name` - Name of the schema
     /// * `properties` - JSON object containing fields to update
-    /// * `condition` - Condition to match rows for update
+    /// * `condition` - ConditionExpression to match rows for update
     ///
     /// # Returns
     /// Number of affected rows
@@ -757,7 +758,7 @@ impl ObjectStore {
         &self,
         schema_name: &str,
         properties: serde_json::Value,
-        condition: Condition,
+        condition: ConditionExpression,
     ) -> Result<i64> {
         let schema = self
             .get_schema(schema_name)
@@ -851,11 +852,15 @@ impl ObjectStore {
     ///
     /// # Arguments
     /// * `schema_name` - Name of the schema
-    /// * `condition` - Condition to match rows for deletion
+    /// * `condition` - ConditionExpression to match rows for deletion
     ///
     /// # Returns
     /// Number of affected rows
-    pub async fn delete_instances(&self, schema_name: &str, condition: Condition) -> Result<i64> {
+    pub async fn delete_instances(
+        &self,
+        schema_name: &str,
+        condition: ConditionExpression,
+    ) -> Result<i64> {
         let schema = self
             .get_schema(schema_name)
             .await?
