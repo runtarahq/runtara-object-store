@@ -5,6 +5,7 @@
 use crate::instance::Condition;
 use crate::schema::Schema;
 use crate::sql::sanitize::quote_identifier;
+use crate::types::ColumnType;
 
 /// Map camelCase system field names to their snake_case SQL column equivalents.
 fn field_to_sql(field: &str) -> &str {
@@ -12,6 +13,34 @@ fn field_to_sql(field: &str) -> &str {
         "createdAt" => "created_at",
         "updatedAt" => "updated_at",
         _ => field,
+    }
+}
+
+/// Resolve the SQL cast type for a field based on schema column definitions.
+///
+/// System fields are handled first (id → text, created_at/updated_at → timestamptz).
+/// Then schema columns are looked up by name and mapped to their SQL cast type.
+/// Falls back to "text" for unknown fields.
+fn resolve_sql_cast(field: &str, schema: &Schema) -> &'static str {
+    // System fields (already in SQL name form after field_to_sql)
+    match field {
+        "id" => return "text",
+        "created_at" | "updated_at" => return "timestamptz",
+        _ => {}
+    }
+
+    // Look up in schema columns
+    if let Some(col) = schema.columns.iter().find(|c| c.name == field) {
+        match &col.column_type {
+            ColumnType::String | ColumnType::Enum { .. } => "text",
+            ColumnType::Integer => "bigint",
+            ColumnType::Decimal { .. } => "numeric",
+            ColumnType::Boolean => "boolean",
+            ColumnType::Timestamp => "timestamptz",
+            ColumnType::Json => "text",
+        }
+    } else {
+        "text"
     }
 }
 
@@ -34,6 +63,7 @@ fn field_to_sql(field: &str) -> &str {
 pub fn build_condition_clause(
     condition: &Condition,
     param_offset: &mut i32,
+    schema: &Schema,
 ) -> Result<(String, Vec<serde_json::Value>), String> {
     let op = condition.op.to_uppercase();
     let args = condition.arguments.as_ref();
@@ -47,7 +77,7 @@ pub fn build_condition_clause(
                 for arg in args {
                     if let Ok(sub_condition) = serde_json::from_value::<Condition>(arg.clone()) {
                         let (clause, mut sub_params) =
-                            build_condition_clause(&sub_condition, param_offset)?;
+                            build_condition_clause(&sub_condition, param_offset, schema)?;
                         clauses.push(format!("({})", clause));
                         params.append(&mut sub_params);
                     }
@@ -66,7 +96,7 @@ pub fn build_condition_clause(
                 for arg in args {
                     if let Ok(sub_condition) = serde_json::from_value::<Condition>(arg.clone()) {
                         let (clause, mut sub_params) =
-                            build_condition_clause(&sub_condition, param_offset)?;
+                            build_condition_clause(&sub_condition, param_offset, schema)?;
                         clauses.push(format!("({})", clause));
                         params.append(&mut sub_params);
                     }
@@ -86,7 +116,7 @@ pub fn build_condition_clause(
                 }
                 if let Ok(sub_condition) = serde_json::from_value::<Condition>(args[0].clone()) {
                     let (clause, sub_params) =
-                        build_condition_clause(&sub_condition, param_offset)?;
+                        build_condition_clause(&sub_condition, param_offset, schema)?;
                     params.extend(sub_params);
                     Ok((format!("NOT ({})", clause), params))
                 } else {
@@ -158,7 +188,11 @@ pub fn build_condition_clause(
 
                 params.push(serde_json::Value::String(value_str));
 
-                let clause = format!("\"{}\"::text {} ${}::text", field, operator, param_offset);
+                let cast = resolve_sql_cast(field, schema);
+                let clause = format!(
+                    "\"{}\"::{} {} ${}::{}",
+                    field, cast, operator, param_offset, cast
+                );
                 *param_offset += 1;
 
                 Ok((clause, params))
@@ -429,17 +463,36 @@ mod tests {
     use super::*;
     use crate::types::ColumnDefinition;
 
+    fn make_test_schema() -> Schema {
+        Schema {
+            id: "test-id".to_string(),
+            name: "test_schema".to_string(),
+            description: None,
+            table_name: "test_table".to_string(),
+            columns: vec![
+                ColumnDefinition::new("name", crate::types::ColumnType::String),
+                ColumnDefinition::new("price", crate::types::ColumnType::decimal(10, 2)),
+                ColumnDefinition::new("quantity", crate::types::ColumnType::Integer),
+                ColumnDefinition::new("active", crate::types::ColumnType::Boolean),
+            ],
+            indexes: None,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        }
+    }
+
     // ==================== Comparison Operations ====================
 
     #[test]
     fn test_eq_condition() {
+        let schema = make_test_schema();
         let condition = Condition {
             op: "EQ".to_string(),
             arguments: Some(vec![serde_json::json!("name"), serde_json::json!("test")]),
         };
 
         let mut offset = 1;
-        let (clause, params) = build_condition_clause(&condition, &mut offset).unwrap();
+        let (clause, params) = build_condition_clause(&condition, &mut offset, &schema).unwrap();
 
         assert_eq!(clause, "\"name\"::text = $1::text");
         assert_eq!(params.len(), 1);
@@ -449,47 +502,51 @@ mod tests {
 
     #[test]
     fn test_eq_condition_with_number() {
+        let schema = make_test_schema();
         let condition = Condition {
             op: "EQ".to_string(),
             arguments: Some(vec![serde_json::json!("age"), serde_json::json!(25)]),
         };
 
         let mut offset = 1;
-        let (clause, params) = build_condition_clause(&condition, &mut offset).unwrap();
+        let (clause, params) = build_condition_clause(&condition, &mut offset, &schema).unwrap();
 
-        assert_eq!(clause, "\"age\"::text = $1::text");
+        assert_eq!(clause, "\"age\"::text = $1::text"); // "age" not in schema, falls back to text
         assert_eq!(params[0], serde_json::json!("25")); // Numbers are converted to strings
     }
 
     #[test]
     fn test_eq_condition_with_boolean() {
+        let schema = make_test_schema();
         let condition = Condition {
             op: "EQ".to_string(),
             arguments: Some(vec![serde_json::json!("active"), serde_json::json!(true)]),
         };
 
         let mut offset = 1;
-        let (clause, params) = build_condition_clause(&condition, &mut offset).unwrap();
+        let (clause, params) = build_condition_clause(&condition, &mut offset, &schema).unwrap();
 
-        assert_eq!(clause, "\"active\"::text = $1::text");
+        assert_eq!(clause, "\"active\"::boolean = $1::boolean");
         assert_eq!(params[0], serde_json::json!("true"));
     }
 
     #[test]
     fn test_eq_condition_lowercase_op() {
+        let schema = make_test_schema();
         let condition = Condition {
             op: "eq".to_string(), // lowercase
             arguments: Some(vec![serde_json::json!("name"), serde_json::json!("test")]),
         };
 
         let mut offset = 1;
-        let (clause, _) = build_condition_clause(&condition, &mut offset).unwrap();
+        let (clause, _) = build_condition_clause(&condition, &mut offset, &schema).unwrap();
 
         assert!(clause.contains("=")); // Should work with lowercase
     }
 
     #[test]
     fn test_ne_condition() {
+        let schema = make_test_schema();
         let condition = Condition {
             op: "NE".to_string(),
             arguments: Some(vec![
@@ -499,7 +556,7 @@ mod tests {
         };
 
         let mut offset = 1;
-        let (clause, params) = build_condition_clause(&condition, &mut offset).unwrap();
+        let (clause, params) = build_condition_clause(&condition, &mut offset, &schema).unwrap();
 
         assert_eq!(clause, "\"status\"::text != $1::text");
         assert_eq!(params[0], serde_json::json!("deleted"));
@@ -507,60 +564,65 @@ mod tests {
 
     #[test]
     fn test_gt_condition() {
+        let schema = make_test_schema();
         let condition = Condition {
             op: "GT".to_string(),
             arguments: Some(vec![serde_json::json!("price"), serde_json::json!(100)]),
         };
 
         let mut offset = 1;
-        let (clause, _) = build_condition_clause(&condition, &mut offset).unwrap();
+        let (clause, _) = build_condition_clause(&condition, &mut offset, &schema).unwrap();
 
-        assert_eq!(clause, "\"price\"::text > $1::text");
+        assert_eq!(clause, "\"price\"::numeric > $1::numeric");
     }
 
     #[test]
     fn test_lt_condition() {
+        let schema = make_test_schema();
         let condition = Condition {
             op: "LT".to_string(),
             arguments: Some(vec![serde_json::json!("quantity"), serde_json::json!(10)]),
         };
 
         let mut offset = 1;
-        let (clause, _) = build_condition_clause(&condition, &mut offset).unwrap();
+        let (clause, _) = build_condition_clause(&condition, &mut offset, &schema).unwrap();
 
-        assert_eq!(clause, "\"quantity\"::text < $1::text");
+        assert_eq!(clause, "\"quantity\"::bigint < $1::bigint");
     }
 
     #[test]
     fn test_gte_condition() {
+        let schema = make_test_schema();
         let condition = Condition {
             op: "GTE".to_string(),
             arguments: Some(vec![serde_json::json!("score"), serde_json::json!(90)]),
         };
 
         let mut offset = 1;
-        let (clause, _) = build_condition_clause(&condition, &mut offset).unwrap();
+        let (clause, _) = build_condition_clause(&condition, &mut offset, &schema).unwrap();
 
-        assert_eq!(clause, "\"score\"::text >= $1::text");
+        assert_eq!(clause, "\"score\"::text >= $1::text"); // "score" not in schema
     }
 
     #[test]
     fn test_lte_condition() {
+        let schema = make_test_schema();
         let condition = Condition {
             op: "LTE".to_string(),
             arguments: Some(vec![serde_json::json!("rating"), serde_json::json!(5)]),
         };
 
         let mut offset = 1;
-        let (clause, _) = build_condition_clause(&condition, &mut offset).unwrap();
+        let (clause, _) = build_condition_clause(&condition, &mut offset, &schema).unwrap();
 
-        assert_eq!(clause, "\"rating\"::text <= $1::text");
+        assert_eq!(clause, "\"rating\"::text <= $1::text"); // "rating" not in schema
     }
 
     // ==================== Logical Operations ====================
 
     #[test]
     fn test_and_condition() {
+        let schema = make_test_schema();
         let condition = Condition {
             op: "AND".to_string(),
             arguments: Some(vec![
@@ -570,7 +632,7 @@ mod tests {
         };
 
         let mut offset = 1;
-        let (clause, params) = build_condition_clause(&condition, &mut offset).unwrap();
+        let (clause, params) = build_condition_clause(&condition, &mut offset, &schema).unwrap();
 
         assert!(clause.contains(" AND "));
         assert!(clause.contains("(\"field1\"::text = $1::text)"));
@@ -581,6 +643,7 @@ mod tests {
 
     #[test]
     fn test_and_with_three_conditions() {
+        let schema = make_test_schema();
         let condition = Condition {
             op: "AND".to_string(),
             arguments: Some(vec![
@@ -591,7 +654,7 @@ mod tests {
         };
 
         let mut offset = 1;
-        let (clause, params) = build_condition_clause(&condition, &mut offset).unwrap();
+        let (clause, params) = build_condition_clause(&condition, &mut offset, &schema).unwrap();
 
         // Count AND occurrences
         let and_count = clause.matches(" AND ").count();
@@ -601,6 +664,7 @@ mod tests {
 
     #[test]
     fn test_or_condition() {
+        let schema = make_test_schema();
         let condition = Condition {
             op: "OR".to_string(),
             arguments: Some(vec![
@@ -610,7 +674,7 @@ mod tests {
         };
 
         let mut offset = 1;
-        let (clause, params) = build_condition_clause(&condition, &mut offset).unwrap();
+        let (clause, params) = build_condition_clause(&condition, &mut offset, &schema).unwrap();
 
         assert!(clause.contains(" OR "));
         assert_eq!(params.len(), 2);
@@ -618,6 +682,7 @@ mod tests {
 
     #[test]
     fn test_not_condition() {
+        let schema = make_test_schema();
         let condition = Condition {
             op: "NOT".to_string(),
             arguments: Some(vec![
@@ -626,7 +691,7 @@ mod tests {
         };
 
         let mut offset = 1;
-        let (clause, _) = build_condition_clause(&condition, &mut offset).unwrap();
+        let (clause, _) = build_condition_clause(&condition, &mut offset, &schema).unwrap();
 
         assert!(clause.starts_with("NOT ("));
         assert!(clause.ends_with(")"));
@@ -634,6 +699,7 @@ mod tests {
 
     #[test]
     fn test_nested_and_or_conditions() {
+        let schema = make_test_schema();
         let condition = Condition {
             op: "AND".to_string(),
             arguments: Some(vec![
@@ -649,7 +715,7 @@ mod tests {
         };
 
         let mut offset = 1;
-        let (clause, params) = build_condition_clause(&condition, &mut offset).unwrap();
+        let (clause, params) = build_condition_clause(&condition, &mut offset, &schema).unwrap();
 
         assert!(clause.contains(" AND "));
         assert!(clause.contains(" OR "));
@@ -660,13 +726,14 @@ mod tests {
 
     #[test]
     fn test_contains_condition() {
+        let schema = make_test_schema();
         let condition = Condition {
             op: "CONTAINS".to_string(),
             arguments: Some(vec![serde_json::json!("name"), serde_json::json!("test")]),
         };
 
         let mut offset = 1;
-        let (clause, params) = build_condition_clause(&condition, &mut offset).unwrap();
+        let (clause, params) = build_condition_clause(&condition, &mut offset, &schema).unwrap();
 
         assert_eq!(clause, "\"name\"::text LIKE $1::text");
         assert_eq!(params[0], serde_json::json!("%test%"));
@@ -676,6 +743,7 @@ mod tests {
 
     #[test]
     fn test_in_condition() {
+        let schema = make_test_schema();
         let condition = Condition {
             op: "IN".to_string(),
             arguments: Some(vec![
@@ -685,7 +753,7 @@ mod tests {
         };
 
         let mut offset = 1;
-        let (clause, params) = build_condition_clause(&condition, &mut offset).unwrap();
+        let (clause, params) = build_condition_clause(&condition, &mut offset, &schema).unwrap();
 
         assert!(clause.contains("ANY"));
         assert!(clause.contains("jsonb_array_elements_text"));
@@ -694,6 +762,7 @@ mod tests {
 
     #[test]
     fn test_not_in_condition() {
+        let schema = make_test_schema();
         let condition = Condition {
             op: "NOT_IN".to_string(),
             arguments: Some(vec![
@@ -703,7 +772,7 @@ mod tests {
         };
 
         let mut offset = 1;
-        let (clause, params) = build_condition_clause(&condition, &mut offset).unwrap();
+        let (clause, params) = build_condition_clause(&condition, &mut offset, &schema).unwrap();
 
         assert!(clause.starts_with("NOT"));
         assert!(clause.contains("ANY"));
@@ -714,13 +783,14 @@ mod tests {
 
     #[test]
     fn test_is_empty_condition() {
+        let schema = make_test_schema();
         let condition = Condition {
             op: "IS_EMPTY".to_string(),
             arguments: Some(vec![serde_json::json!("description")]),
         };
 
         let mut offset = 1;
-        let (clause, params) = build_condition_clause(&condition, &mut offset).unwrap();
+        let (clause, params) = build_condition_clause(&condition, &mut offset, &schema).unwrap();
 
         assert_eq!(
             clause,
@@ -732,13 +802,14 @@ mod tests {
 
     #[test]
     fn test_is_not_empty_condition() {
+        let schema = make_test_schema();
         let condition = Condition {
             op: "IS_NOT_EMPTY".to_string(),
             arguments: Some(vec![serde_json::json!("email")]),
         };
 
         let mut offset = 1;
-        let (clause, params) = build_condition_clause(&condition, &mut offset).unwrap();
+        let (clause, params) = build_condition_clause(&condition, &mut offset, &schema).unwrap();
 
         assert_eq!(clause, "(\"email\" IS NOT NULL AND \"email\"::text != '')");
         assert!(params.is_empty());
@@ -746,13 +817,14 @@ mod tests {
 
     #[test]
     fn test_is_defined_condition() {
+        let schema = make_test_schema();
         let condition = Condition {
             op: "IS_DEFINED".to_string(),
             arguments: Some(vec![serde_json::json!("optional_field")]),
         };
 
         let mut offset = 1;
-        let (clause, params) = build_condition_clause(&condition, &mut offset).unwrap();
+        let (clause, params) = build_condition_clause(&condition, &mut offset, &schema).unwrap();
 
         assert_eq!(clause, "\"optional_field\" IS NOT NULL");
         assert!(params.is_empty());
@@ -762,6 +834,7 @@ mod tests {
 
     #[test]
     fn test_param_offset_tracking() {
+        let schema = make_test_schema();
         let condition = Condition {
             op: "AND".to_string(),
             arguments: Some(vec![
@@ -772,7 +845,7 @@ mod tests {
         };
 
         let mut offset = 5; // Start at 5
-        let (clause, params) = build_condition_clause(&condition, &mut offset).unwrap();
+        let (clause, params) = build_condition_clause(&condition, &mut offset, &schema).unwrap();
 
         assert!(clause.contains("$5"));
         assert!(clause.contains("$6"));
@@ -785,13 +858,14 @@ mod tests {
 
     #[test]
     fn test_unsupported_operation() {
+        let schema = make_test_schema();
         let condition = Condition {
             op: "INVALID_OP".to_string(),
             arguments: Some(vec![serde_json::json!("field")]),
         };
 
         let mut offset = 1;
-        let result = build_condition_clause(&condition, &mut offset);
+        let result = build_condition_clause(&condition, &mut offset, &schema);
 
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Unsupported operation"));
@@ -799,13 +873,14 @@ mod tests {
 
     #[test]
     fn test_and_no_arguments() {
+        let schema = make_test_schema();
         let condition = Condition {
             op: "AND".to_string(),
             arguments: None,
         };
 
         let mut offset = 1;
-        let result = build_condition_clause(&condition, &mut offset);
+        let result = build_condition_clause(&condition, &mut offset, &schema);
 
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("requires arguments"));
@@ -813,13 +888,14 @@ mod tests {
 
     #[test]
     fn test_eq_wrong_argument_count() {
+        let schema = make_test_schema();
         let condition = Condition {
             op: "EQ".to_string(),
             arguments: Some(vec![serde_json::json!("field_only")]),
         };
 
         let mut offset = 1;
-        let result = build_condition_clause(&condition, &mut offset);
+        let result = build_condition_clause(&condition, &mut offset, &schema);
 
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("requires exactly 2 arguments"));
@@ -827,6 +903,7 @@ mod tests {
 
     #[test]
     fn test_not_wrong_argument_count() {
+        let schema = make_test_schema();
         let condition = Condition {
             op: "NOT".to_string(),
             arguments: Some(vec![
@@ -836,7 +913,7 @@ mod tests {
         };
 
         let mut offset = 1;
-        let result = build_condition_clause(&condition, &mut offset);
+        let result = build_condition_clause(&condition, &mut offset, &schema);
 
         assert!(result.is_err());
         assert!(
@@ -848,6 +925,7 @@ mod tests {
 
     #[test]
     fn test_in_second_arg_not_array() {
+        let schema = make_test_schema();
         let condition = Condition {
             op: "IN".to_string(),
             arguments: Some(vec![
@@ -857,7 +935,7 @@ mod tests {
         };
 
         let mut offset = 1;
-        let result = build_condition_clause(&condition, &mut offset);
+        let result = build_condition_clause(&condition, &mut offset, &schema);
 
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("must be an array"));
@@ -865,13 +943,14 @@ mod tests {
 
     #[test]
     fn test_contains_second_arg_not_string() {
+        let schema = make_test_schema();
         let condition = Condition {
             op: "CONTAINS".to_string(),
             arguments: Some(vec![serde_json::json!("field"), serde_json::json!(123)]),
         };
 
         let mut offset = 1;
-        let result = build_condition_clause(&condition, &mut offset);
+        let result = build_condition_clause(&condition, &mut offset, &schema);
 
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("must be a string"));
@@ -879,6 +958,7 @@ mod tests {
 
     #[test]
     fn test_invalid_field_name_special_chars() {
+        let schema = make_test_schema();
         let condition = Condition {
             op: "EQ".to_string(),
             arguments: Some(vec![
@@ -888,7 +968,7 @@ mod tests {
         };
 
         let mut offset = 1;
-        let result = build_condition_clause(&condition, &mut offset);
+        let result = build_condition_clause(&condition, &mut offset, &schema);
 
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("invalid characters"));
@@ -896,6 +976,7 @@ mod tests {
 
     #[test]
     fn test_field_name_with_hyphen_is_valid() {
+        let schema = make_test_schema();
         let condition = Condition {
             op: "EQ".to_string(),
             arguments: Some(vec![
@@ -905,13 +986,14 @@ mod tests {
         };
 
         let mut offset = 1;
-        let result = build_condition_clause(&condition, &mut offset);
+        let result = build_condition_clause(&condition, &mut offset, &schema);
 
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_field_name_with_underscore_is_valid() {
+        let schema = make_test_schema();
         let condition = Condition {
             op: "EQ".to_string(),
             arguments: Some(vec![
@@ -921,29 +1003,110 @@ mod tests {
         };
 
         let mut offset = 1;
-        let result = build_condition_clause(&condition, &mut offset);
+        let result = build_condition_clause(&condition, &mut offset, &schema);
 
         assert!(result.is_ok());
     }
 
-    // ==================== build_order_by_clause Tests ====================
+    // ==================== Schema-Aware Type Casting ====================
 
-    fn make_test_schema() -> Schema {
-        Schema {
-            id: "test-id".to_string(),
-            name: "test_schema".to_string(),
-            description: None,
-            table_name: "test_table".to_string(),
-            columns: vec![
-                ColumnDefinition::new("name", crate::types::ColumnType::String),
-                ColumnDefinition::new("price", crate::types::ColumnType::decimal(10, 2)),
-                ColumnDefinition::new("quantity", crate::types::ColumnType::Integer),
-            ],
-            indexes: None,
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-            updated_at: "2024-01-01T00:00:00Z".to_string(),
-        }
+    #[test]
+    fn test_eq_integer_column_uses_bigint_cast() {
+        let schema = make_test_schema();
+        let condition = Condition {
+            op: "EQ".to_string(),
+            arguments: Some(vec![serde_json::json!("quantity"), serde_json::json!(42)]),
+        };
+
+        let mut offset = 1;
+        let (clause, _) = build_condition_clause(&condition, &mut offset, &schema).unwrap();
+
+        assert_eq!(clause, "\"quantity\"::bigint = $1::bigint");
     }
+
+    #[test]
+    fn test_gt_decimal_column_uses_numeric_cast() {
+        let schema = make_test_schema();
+        let condition = Condition {
+            op: "GT".to_string(),
+            arguments: Some(vec![serde_json::json!("price"), serde_json::json!(99.99)]),
+        };
+
+        let mut offset = 1;
+        let (clause, _) = build_condition_clause(&condition, &mut offset, &schema).unwrap();
+
+        assert_eq!(clause, "\"price\"::numeric > $1::numeric");
+    }
+
+    #[test]
+    fn test_eq_boolean_column_uses_boolean_cast() {
+        let schema = make_test_schema();
+        let condition = Condition {
+            op: "EQ".to_string(),
+            arguments: Some(vec![serde_json::json!("active"), serde_json::json!(true)]),
+        };
+
+        let mut offset = 1;
+        let (clause, _) = build_condition_clause(&condition, &mut offset, &schema).unwrap();
+
+        assert_eq!(clause, "\"active\"::boolean = $1::boolean");
+    }
+
+    #[test]
+    fn test_eq_unknown_column_falls_back_to_text() {
+        let schema = make_test_schema();
+        let condition = Condition {
+            op: "EQ".to_string(),
+            arguments: Some(vec![
+                serde_json::json!("unknown_field"),
+                serde_json::json!("value"),
+            ]),
+        };
+
+        let mut offset = 1;
+        let (clause, _) = build_condition_clause(&condition, &mut offset, &schema).unwrap();
+
+        assert_eq!(clause, "\"unknown_field\"::text = $1::text");
+    }
+
+    #[test]
+    fn test_system_field_created_at_uses_timestamptz() {
+        let schema = make_test_schema();
+        let condition = Condition {
+            op: "GT".to_string(),
+            arguments: Some(vec![
+                serde_json::json!("createdAt"),
+                serde_json::json!("2024-01-01T00:00:00Z"),
+            ]),
+        };
+
+        let mut offset = 1;
+        let (clause, _) = build_condition_clause(&condition, &mut offset, &schema).unwrap();
+
+        assert_eq!(
+            clause,
+            "\"created_at\"::timestamptz > $1::timestamptz"
+        );
+    }
+
+    #[test]
+    fn test_system_field_id_uses_text() {
+        let schema = make_test_schema();
+        let condition = Condition {
+            op: "EQ".to_string(),
+            arguments: Some(vec![
+                serde_json::json!("id"),
+                serde_json::json!("some-uuid"),
+            ]),
+        };
+
+        let mut offset = 1;
+        let (clause, _) = build_condition_clause(&condition, &mut offset, &schema).unwrap();
+
+        assert_eq!(clause, "\"id\"::text = $1::text");
+    }
+
+    // ==================== build_order_by_clause Tests ====================
 
     #[test]
     fn test_order_by_default() {

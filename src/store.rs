@@ -799,8 +799,9 @@ impl ObjectStore {
         }
 
         // Build WHERE clause from condition
-        let (where_clause, condition_params) = build_condition_clause(&condition, &mut param_idx)
-            .map_err(ObjectStoreError::InvalidCondition)?;
+        let (where_clause, condition_params) =
+            build_condition_clause(&condition, &mut param_idx, &schema)
+                .map_err(ObjectStoreError::InvalidCondition)?;
 
         let base_where = if self.config.soft_delete {
             format!("deleted = FALSE AND ({})", where_clause)
@@ -864,7 +865,7 @@ impl ObjectStore {
         // Build WHERE clause from condition
         let mut param_offset = 1i32;
         let (where_clause, condition_params) =
-            build_condition_clause(&condition, &mut param_offset)
+            build_condition_clause(&condition, &mut param_offset, &schema)
                 .map_err(ObjectStoreError::InvalidCondition)?;
 
         let mut tx = self.pool.begin().await?;
@@ -1277,7 +1278,7 @@ impl ObjectStore {
         // Build WHERE clause from condition
         let (where_clause, params) = if let Some(condition) = filter.condition {
             let mut param_offset = 1;
-            build_condition_clause(&condition, &mut param_offset)
+            build_condition_clause(&condition, &mut param_offset, schema)
                 .map_err(ObjectStoreError::InvalidCondition)?
         } else {
             ("TRUE".to_string(), Vec::new())
