@@ -6,6 +6,15 @@ use crate::instance::Condition;
 use crate::schema::Schema;
 use crate::sql::sanitize::quote_identifier;
 
+/// Map camelCase system field names to their snake_case SQL column equivalents.
+fn field_to_sql(field: &str) -> &str {
+    match field {
+        "createdAt" => "created_at",
+        "updatedAt" => "updated_at",
+        _ => field,
+    }
+}
+
 /// Build SQL WHERE clause from condition structure
 ///
 /// Returns (clause, params) tuple where:
@@ -92,18 +101,26 @@ pub fn build_condition_clause(
                 if args.len() != 2 {
                     return Err(format!("{} operation requires exactly 2 arguments", op));
                 }
-                let field = args[0]
+                let raw_field = args[0]
                     .as_str()
                     .ok_or("First argument must be a field name")?;
                 let value = &args[1];
 
+                // Validate field name is not empty
+                if raw_field.is_empty() {
+                    return Err("Field name cannot be empty".to_string());
+                }
+
                 // Validate field name to prevent SQL injection
-                if !field
+                if !raw_field
                     .chars()
                     .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
                 {
                     return Err("Field name contains invalid characters".to_string());
                 }
+
+                // Map camelCase system fields to snake_case SQL columns
+                let field = field_to_sql(raw_field);
 
                 let operator = match op.as_str() {
                     "EQ" => "=",
@@ -154,18 +171,24 @@ pub fn build_condition_clause(
                 if args.len() != 2 {
                     return Err("CONTAINS operation requires exactly 2 arguments".to_string());
                 }
-                let field = args[0]
+                let raw_field = args[0]
                     .as_str()
                     .ok_or("First argument must be a field name")?;
                 let value = args[1].as_str().ok_or("Second argument must be a string")?;
 
+                if raw_field.is_empty() {
+                    return Err("Field name cannot be empty".to_string());
+                }
+
                 // Validate field name
-                if !field
+                if !raw_field
                     .chars()
                     .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
                 {
                     return Err("Field name contains invalid characters".to_string());
                 }
+
+                let field = field_to_sql(raw_field);
 
                 params.push(serde_json::Value::String(format!("%{}%", value)));
 
@@ -182,20 +205,26 @@ pub fn build_condition_clause(
                 if args.len() != 2 {
                     return Err("IN operation requires exactly 2 arguments".to_string());
                 }
-                let field = args[0]
+                let raw_field = args[0]
                     .as_str()
                     .ok_or("First argument must be a field name")?;
                 let values = args[1]
                     .as_array()
                     .ok_or("Second argument must be an array")?;
 
+                if raw_field.is_empty() {
+                    return Err("Field name cannot be empty".to_string());
+                }
+
                 // Validate field name
-                if !field
+                if !raw_field
                     .chars()
                     .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
                 {
                     return Err("Field name contains invalid characters".to_string());
                 }
+
+                let field = field_to_sql(raw_field);
 
                 params.push(serde_json::Value::Array(values.clone()));
 
@@ -215,20 +244,26 @@ pub fn build_condition_clause(
                 if args.len() != 2 {
                     return Err("NOT_IN operation requires exactly 2 arguments".to_string());
                 }
-                let field = args[0]
+                let raw_field = args[0]
                     .as_str()
                     .ok_or("First argument must be a field name")?;
                 let values = args[1]
                     .as_array()
                     .ok_or("Second argument must be an array")?;
 
+                if raw_field.is_empty() {
+                    return Err("Field name cannot be empty".to_string());
+                }
+
                 // Validate field name
-                if !field
+                if !raw_field
                     .chars()
                     .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
                 {
                     return Err("Field name contains invalid characters".to_string());
                 }
+
+                let field = field_to_sql(raw_field);
 
                 params.push(serde_json::Value::Array(values.clone()));
 
@@ -248,15 +283,21 @@ pub fn build_condition_clause(
                 if args.len() != 1 {
                     return Err("IS_EMPTY operation requires exactly 1 argument".to_string());
                 }
-                let field = args[0].as_str().ok_or("Argument must be a field name")?;
+                let raw_field = args[0].as_str().ok_or("Argument must be a field name")?;
+
+                if raw_field.is_empty() {
+                    return Err("Field name cannot be empty".to_string());
+                }
 
                 // Validate field name
-                if !field
+                if !raw_field
                     .chars()
                     .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
                 {
                     return Err("Field name contains invalid characters".to_string());
                 }
+
+                let field = field_to_sql(raw_field);
 
                 let clause = format!("(\"{}\" IS NULL OR \"{}\"::text = '')", field, field);
 
@@ -270,15 +311,21 @@ pub fn build_condition_clause(
                 if args.len() != 1 {
                     return Err("IS_NOT_EMPTY operation requires exactly 1 argument".to_string());
                 }
-                let field = args[0].as_str().ok_or("Argument must be a field name")?;
+                let raw_field = args[0].as_str().ok_or("Argument must be a field name")?;
+
+                if raw_field.is_empty() {
+                    return Err("Field name cannot be empty".to_string());
+                }
 
                 // Validate field name
-                if !field
+                if !raw_field
                     .chars()
                     .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
                 {
                     return Err("Field name contains invalid characters".to_string());
                 }
+
+                let field = field_to_sql(raw_field);
 
                 let clause = format!("(\"{}\" IS NOT NULL AND \"{}\"::text != '')", field, field);
 
@@ -292,15 +339,21 @@ pub fn build_condition_clause(
                 if args.len() != 1 {
                     return Err("IS_DEFINED operation requires exactly 1 argument".to_string());
                 }
-                let field = args[0].as_str().ok_or("Argument must be a field name")?;
+                let raw_field = args[0].as_str().ok_or("Argument must be a field name")?;
+
+                if raw_field.is_empty() {
+                    return Err("Field name cannot be empty".to_string());
+                }
 
                 // Validate field name
-                if !field
+                if !raw_field
                     .chars()
                     .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
                 {
                     return Err("Field name contains invalid characters".to_string());
                 }
+
+                let field = field_to_sql(raw_field);
 
                 let clause = format!("\"{}\" IS NOT NULL", field);
 
@@ -327,15 +380,6 @@ pub fn build_order_by_clause(
     sort_order: &Option<Vec<String>>,
     schema: &Schema,
 ) -> Result<String, String> {
-    // Map camelCase to snake_case for SQL
-    fn field_to_sql(field: &str) -> &str {
-        match field {
-            "createdAt" => "created_at",
-            "updatedAt" => "updated_at",
-            _ => field,
-        }
-    }
-
     let sort_fields = match sort_by {
         Some(fields) if !fields.is_empty() => fields,
         _ => return Ok("created_at ASC".to_string()), // Default
